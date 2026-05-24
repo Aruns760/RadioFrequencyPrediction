@@ -1,9 +1,25 @@
 import streamlit as st
-import joblib
-import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import os
+from streamlit_autorefresh import st_autorefresh
+from streamlit_folium import st_folium
+from streamlit_geolocation import streamlit_geolocation
+from src.auth import register_user, login_user
+from src.predict import predict_signal
+from src.failure_detection import detect_signal_issues
+from src.visualization import create_chart
+from src.live_chart import create_live_chart
+from src.heatmap import create_heatmap
+from src.database import save_prediction, get_history
+from src.anomaly_detection import detect_anomaly
+# Auto refresh every 5 seconds
+st_autorefresh(
+    interval=5000,
+    key="rf_dashboard_refresh"
+)
+# Load dataset
+df = pd.read_csv(
+    "dataset/signal_metrics.csv"
+)
 
 # Page config
 st.set_page_config(
@@ -11,11 +27,102 @@ st.set_page_config(
     layout="wide"
 )
 
-# Load trained model
-model = joblib.load('models/rf_model.pkl')
+# Session state
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 
-# Title
+if "username" not in st.session_state:
+    st.session_state.username = ""
+
+# Authentication menu
+menu = st.sidebar.selectbox(
+    "Menu",
+    ["Login", "Register"]
+)
+
+# Login/Register section
+if not st.session_state.logged_in:
+
+    st.title("🔐 RF Prediction Login System")
+
+    username = st.sidebar.text_input(
+        "Username"
+    )
+
+    password = st.sidebar.text_input(
+        "Password",
+        type="password"
+    )
+
+    # Register
+    if menu == "Register":
+
+        if st.sidebar.button("Register"):
+
+            success = register_user(
+                username,
+                password
+            )
+
+            if success:
+
+                st.sidebar.success(
+                    "User Registered Successfully ✅"
+                )
+
+            else:
+
+                st.sidebar.error(
+                    "Username Already Exists ❌"
+                )
+
+    # Login
+    if menu == "Login":
+
+        if st.sidebar.button("Login"):
+
+            success = login_user(
+                username,
+                password
+            )
+
+            if success:
+
+                st.session_state.logged_in = True
+                st.session_state.username = username
+
+                st.sidebar.success(
+                    "Login Successful ✅"
+                )
+
+                st.rerun()
+
+            else:
+
+                st.sidebar.error(
+                    "Invalid Username or Password ❌"
+                )
+
+    st.warning(
+        "Please Login to Access RF Dashboard"
+    )
+
+    st.stop()
+
+# Logout button
+if st.sidebar.button("Logout"):
+
+    st.session_state.logged_in = False
+    st.session_state.username = ""
+
+    st.rerun()
+
+# Dashboard title
 st.title("📡 Radio Frequency Prediction System")
+
+st.success(
+    f"Welcome {st.session_state.username} 👋"
+)
 
 st.metric(
     label="Model Accuracy",
@@ -26,10 +133,9 @@ st.markdown(
     "AI-Based RF Signal Strength Prediction Dashboard"
 )
 
-# Sidebar
+# Sidebar inputs
 st.sidebar.header("RF Input Parameters")
 
-# Inputs
 signal_quality = st.sidebar.slider(
     "Signal Quality (%)",
     0,
@@ -56,7 +162,7 @@ network_type = st.sidebar.selectbox(
     ["3G", "4G", "5G", "LTE"]
 )
 
-# Convert network type
+# Network mapping
 network_map = {
     "3G": 0,
     "4G": 1,
@@ -81,11 +187,11 @@ bladerf = st.sidebar.number_input(
     value=-92.0
 )
 
-# Predict button
+# Prediction button
 if st.button("Predict Signal Strength"):
 
-    # Prepare features
-    features = np.array([[
+    # Predict
+    prediction = predict_signal(
         signal_quality,
         throughput,
         latency,
@@ -93,84 +199,134 @@ if st.button("Predict Signal Strength"):
         bb60c,
         srsran,
         bladerf
-    ]])
+    )
 
-    # Prediction
-    prediction = model.predict(features)
-
-    # Show prediction
+    # Prediction result
     st.success(
-        f"Predicted Signal Strength: {prediction[0]:.2f} dBm"
+        f"Predicted Signal Strength: {prediction:.2f} dBm"
     )
 
-    # Signal category
-    if prediction[0] > -70:
-        st.info("Excellent Signal 📶")
+    # AI anomaly detection
+    is_anomaly = detect_anomaly(
+        signal_quality,
+        throughput,
+        latency,
+        prediction
+    )
 
-    elif prediction[0] > -90:
-        st.warning("Moderate Signal ⚠️")
+    if is_anomaly:
 
-    else:
-        st.error("Weak Signal ❌")
-
-    # Create history dataframe
-    history = pd.DataFrame({
-        'Signal Quality': [signal_quality],
-        'Throughput': [throughput],
-        'Latency': [latency],
-        'Prediction': [prediction[0]]
-    })
-
-    # Save prediction history
-    if os.path.exists("prediction_history.csv"):
-
-        history.to_csv(
-            "prediction_history.csv",
-            mode='a',
-            header=False,
-            index=False
+        st.error(
+            "⚠️ RF Anomaly Detected!"
         )
 
     else:
 
-        history.to_csv(
-            "prediction_history.csv",
-            index=False
+        st.success(
+            "No RF Anomaly Detected ✅"
         )
 
-    # Visualization
-    sample_data = pd.DataFrame({
-        'Parameters': [
-            'Signal Quality',
-            'Throughput',
-            'Latency'
-        ],
-        'Values': [
-            signal_quality,
-            throughput,
-            latency
-        ]
+    # AI signal issue detection
+    issues = detect_signal_issues(
+        prediction,
+        throughput,
+        latency,
+        bb60c,
+        srsran
+    )
+
+    if len(issues) == 0:
+
+        st.success(
+            "Network Stable ✅"
+        )
+
+    else:
+
+        for issue in issues:
+            st.warning(issue)
+
+    # Health score
+
+    st.subheader(
+        "📊 Network Health Status"
+    )
+
+    health_score = 100
+
+    if prediction < -90:
+        health_score -= 30
+
+    if latency > 200:
+        health_score -= 30
+
+    if throughput < 5:
+        health_score -= 20
+
+    if abs(bb60c - srsran) > 15:
+        health_score -= 20
+
+    if health_score < 0:
+        health_score = 0
+
+    st.progress(
+        health_score / 100
+    )
+
+    st.write(
+        f"Network Health Score: {health_score}%"
+    )
+
+    # Save to MongoDB
+    save_prediction({
+        "Username": st.session_state.username,
+        "Signal Quality": signal_quality,
+        "Throughput": throughput,
+        "Latency": latency,
+        "Prediction": prediction
     })
 
-    fig, ax = plt.subplots()
+# Load history
+history_data = pd.DataFrame(
+    get_history(
+        st.session_state.username
+    )
+)
 
-    ax.bar(
-        sample_data['Parameters'],
-        sample_data['Values']
+# Charts
+st.subheader(
+    "📊 RF Parameter Analysis"
+)
+
+fig = create_chart(
+    signal_quality,
+    throughput,
+    latency
+)
+
+st.pyplot(fig)
+
+# History
+st.subheader(
+    "Prediction History"
+)
+
+if not history_data.empty:
+
+    st.dataframe(
+        history_data.tail(10)
     )
 
-    ax.set_title("RF Parameter Analysis")
-
-    st.pyplot(fig)
-
-    # Show history
-    st.subheader("Prediction History")
-
-    history_data = pd.read_csv(
-        "prediction_history.csv"
+    # Live chart
+    st.subheader(
+        "📈 Live RF Monitoring"
     )
 
-    st.dataframe(history_data.tail(10))
+    live_fig = create_live_chart(
+        history_data
+    )
+
+    st.pyplot(live_fig)
 
     # Download report
     csv = history_data.to_csv(index=False)
@@ -178,6 +334,66 @@ if st.button("Predict Signal Strength"):
     st.download_button(
         label="Download Prediction Report",
         data=csv,
-        file_name='rf_prediction_report.csv',
-        mime='text/csv'
+        file_name="rf_prediction_report.csv",
+        mime="text/csv"
     )
+# Live user GPS location
+st.subheader("📍 Live User GPS Location")
+
+location = streamlit_geolocation()
+
+if location["latitude"] is not None:
+
+    st.success("Live Location Detected ✅")
+
+    st.write(
+        f"Latitude: {location['latitude']}"
+    )
+
+    st.write(
+        f"Longitude: {location['longitude']}"
+    )
+
+    # Create live location map
+    import folium
+
+    live_map = folium.Map(
+        location=[
+            location["latitude"],
+            location["longitude"]
+        ],
+        zoom_start=15
+    )
+
+    # Marker
+    folium.Marker(
+        [
+            location["latitude"],
+            location["longitude"]
+        ],
+        popup="Current User Location"
+    ).add_to(live_map)
+
+    st_folium(
+        live_map,
+        width=1200,
+        height=400
+    )
+
+else:
+
+    st.warning(
+        "Please Allow Location Access 🌍"
+    )
+# Heatmap
+st.subheader(
+    "🌍 RF Signal Heatmap"
+)
+
+rf_map = create_heatmap(df)
+
+st_folium(
+    rf_map,
+    width=1200,
+    height=500
+)
