@@ -502,21 +502,59 @@ if location["latitude"] is not None:
     g2.metric("Longitude", f"{location['longitude']:.6f}°")
 
     import folium
+
+    # ── Satellite tile with morning warm overlay ──
     live_map = folium.Map(
         location=[location["latitude"], location["longitude"]],
-        zoom_start=15,
-        tiles="CartoDB dark_matter",
+        zoom_start=16,
+        tiles=None,
     )
-    folium.CircleMarker(
-        [location["latitude"], location["longitude"]],
-        radius=10,
-        color="#00d4ff",
-        fill=True,
-        fill_color="#00d4ff",
-        fill_opacity=0.5,
-        popup="Current User Location",
+
+    # Esri World Imagery (satellite)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri World Imagery",
+        name="Satellite",
+        max_zoom=19,
     ).add_to(live_map)
-    st_folium(live_map, width=None, height=380)
+
+    # Warm morning colour wash on top
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri Labels",
+        name="Labels",
+        opacity=0.55,
+    ).add_to(live_map)
+
+    # Golden sunrise marker with pulsing ring via DivIcon
+    pulse_html = """
+    <div style="position:relative; width:40px; height:40px;">
+      <div style="position:absolute; top:0; left:0; width:40px; height:40px;
+                  border-radius:50%; background:rgba(255,180,60,0.25);
+                  animation:pulse 1.8s ease-out infinite;"></div>
+      <div style="position:absolute; top:10px; left:10px; width:20px; height:20px;
+                  border-radius:50%; background:#ffb347;
+                  border:2px solid #fff3cd; box-shadow:0 0 10px #ffb34799;"></div>
+    </div>
+    <style>
+      @keyframes pulse {
+        0%   { transform:scale(0.6); opacity:0.8; }
+        100% { transform:scale(2.2); opacity:0; }
+      }
+    </style>
+    """
+    folium.Marker(
+        [location["latitude"], location["longitude"]],
+        icon=folium.DivIcon(html=pulse_html, icon_size=(40, 40), icon_anchor=(20, 20)),
+        popup=folium.Popup(
+            "<b style='font-family:monospace;color:#7a4f00;'>📍 Live Position</b><br>"
+            f"<span style='font-size:11px;color:#555;'>"
+            f"{location['latitude']:.5f}°, {location['longitude']:.5f}°</span>",
+            max_width=200,
+        ),
+    ).add_to(live_map)
+
+    st_folium(live_map, width=None, height=400)
 else:
     st.info("📍  Allow location access to enable GPS tracking.")
 
@@ -528,5 +566,59 @@ st.markdown("""
     RF SIGNAL HEATMAP
 </div>""", unsafe_allow_html=True)
 
-rf_map = create_heatmap(df)
-st_folium(rf_map, width=None, height=480)
+st.markdown("<hr>", unsafe_allow_html=True)
+st.markdown("""
+<div style="font-family:'Space Mono',monospace; font-size:0.75rem;
+            color:#4d7a9e; letter-spacing:0.15em; margin-bottom:1rem;">
+    RF SIGNAL HEATMAP
+</div>""", unsafe_allow_html=True)
+
+# Patch create_heatmap to use satellite base then overlay heatmap
+import folium
+from folium.plugins import HeatMap
+
+# Build satellite base map centred on dataset average if possible
+try:
+    lat_center = df["latitude"].mean()  if "latitude"  in df.columns else 13.08
+    lon_center = df["longitude"].mean() if "longitude" in df.columns else 80.27
+except Exception:
+    lat_center, lon_center = 13.08, 80.27
+
+rf_map = folium.Map(
+    location=[lat_center, lon_center],
+    zoom_start=12,
+    tiles=None,
+)
+
+# Satellite layer
+folium.TileLayer(
+    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attr="Esri World Imagery",
+    name="Satellite",
+    max_zoom=19,
+).add_to(rf_map)
+
+# Label overlay (morning warm opacity)
+folium.TileLayer(
+    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+    attr="Esri Labels",
+    name="Labels",
+    opacity=0.5,
+).add_to(rf_map)
+
+# Heatmap — warm sunrise gradient (yellow → orange → red)
+try:
+    heat_data = df[["latitude", "longitude", "signal_strength"]].dropna().values.tolist()
+    HeatMap(
+        heat_data,
+        min_opacity=0.35,
+        max_zoom=16,
+        radius=22,
+        blur=18,
+        gradient={0.2: "#ffe066", 0.5: "#ffb347", 0.75: "#ff6b35", 1.0: "#ff1744"},
+    ).add_to(rf_map)
+except Exception:
+    # Fallback to original helper if columns differ
+    rf_map = create_heatmap(df)
+
+st_folium(rf_map, width=None, height=500)
